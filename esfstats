@@ -1,5 +1,6 @@
 #!/usr/bin/env amm
 
+import $ivy.`org.slf4j:slf4j-nop:1.7.21`
 import $ivy.`com.sksamuel.elastic4s::elastic4s-core:2.4.0`
 
 import java.util
@@ -104,6 +105,28 @@ esfstats is a Scala program wrapped in a shell script that runs with Ammonite (h
     executeQueryOnFields(index, documentType, client)(fields)(createFieldNotExistsQuery)
   }
 
+  def printFieldStats(fieldCounts: Map[String, (Long, Long)]): Unit = {
+    
+    val fieldNameHeader = "field name"
+    val fieldExistsCountHeader = "field exists in (number of documents)"
+    val fieldNotExistsCountHeader = "field not exists in (number of documents)"
+    val dash = '-'
+    val firstColumnDashed = dash.toString * 31
+    val secondColumnDashed = dash.toString * 39
+    val thirdColumnDashed = dash.toString * 42
+
+    println(f"$fieldNameHeader%-30s | $fieldExistsCountHeader%-37s | $fieldNotExistsCountHeader%-41s")
+    println(f"$firstColumnDashed|$secondColumnDashed|$thirdColumnDashed")
+    println(fieldCounts.map(entry => {
+
+      val fieldName = entry._1
+      val fieldExistsCount = entry._2._1
+      val fieldNotExistsCount = entry._2._2
+
+      f"$fieldName%-30s | $fieldExistsCount%37d | $fieldNotExistsCount%41d"
+    }).mkString("\n"))
+  }
+
   @main
   def main(args: String*) = {
 
@@ -133,6 +156,8 @@ esfstats is a Scala program wrapped in a shell script that runs with Ammonite (h
     val index = indexOption.get
     val documentType = typeOption.get
 
+    println(f"\ntry to retrieve field statistics for index '$index' and document type '$documentType' at host '$host' and port '$port'\n")
+
     val uri = ElasticsearchClientUri("elasticsearch://" + host + ":" + port)
     val client = ElasticClient.transport(uri)
 
@@ -148,5 +173,5 @@ esfstats is a Scala program wrapped in a shell script that runs with Ammonite (h
       field -> (fieldExistsCount, fieldNotExistsCount)
     }).toMap
 
-    println(fieldCounts.mkString("\n"))
+    printFieldStats(fieldCounts)
   }
