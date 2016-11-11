@@ -1,0 +1,177 @@
+#!/usr/bin/env amm
+
+import $ivy.`org.slf4j:slf4j-nop:1.7.21`
+import $ivy.`com.sksamuel.elastic4s::elastic4s-core:2.4.0`
+
+import java.util
+
+import ammonite.ops._
+
+import com.sksamuel.elastic4s.ElasticDsl._
+import com.sksamuel.elastic4s._
+
+import scala.collection.JavaConverters._
+
+  val usage =
+    """esfstats - elasticsearch fields statistics
+
+esfstats is a Scala program wrapped in a shell script that runs with Ammonite (http://www.lihaoyi.com/Ammonite/#ScalaScripts). It extracts some statistics re. field coverage in the documents.
+
+    Usage: esfstats
+        -host   hostname or IP of the elasticsearch instance
+        -port   port of the native Elasticsearch transport protocol API
+        -index  index name
+        -type   document type
+        -help   print this help
+    """
+
+  type OptionMap = Map[Symbol, String]
+  type Query = String => QueryDefinition
+
+  def nextOption(map: OptionMap, list: List[String]): OptionMap = {
+
+    list match {
+      case Nil => map
+      case "-host" :: value :: tail =>
+        nextOption(map ++ Map('host -> value.toString), tail)
+      case "-port" :: value :: tail =>
+        nextOption(map ++ Map('port -> value.toString), tail)
+      case "-index" :: value :: tail =>
+        nextOption(map ++ Map('index -> value.toString), tail)
+      case "-type" :: value :: tail =>
+        nextOption(map ++ Map('type -> value.toString), tail)
+      case "-help" :: tail =>
+        println(usage)
+        sys.exit(1)
+      case option :: tail =>
+        println("Unknown option " + option)
+        map
+    }
+  }
+
+  def getFields(index: String, documentType: String, client: ElasticClient): Set[String] = {
+
+    val mappings: AnyRef = client.execute {
+
+      getMapping(index / documentType)
+    }.await
+      .mappings(index)(documentType)
+      .sourceAsMap()
+      .get("properties")
+
+    mappings match {
+      case map: util.Map[String, util.Map[String, String]] => map.keySet().asScala.toSet
+      case _ => Set[String]()
+    }
+  }
+
+  def executeTotalHitsQuery(index: String, documentType: String, client: ElasticClient)(queryDefinition: QueryDefinition): Long = {
+
+    client.execute {
+
+      search in index / documentType query queryDefinition size 0
+    }.await
+      .totalHits
+  }
+
+  def executeQueryOnFields(index: String, documentType: String, client: ElasticClient)(fields: Set[String])(totalHitsQuery: Query): Map[String, Long] = {
+
+    fields.map(field => {
+
+      val queryResult = executeTotalHitsQuery(index, documentType, client)(totalHitsQuery(field))
+
+      (field, queryResult)
+    }).toMap
+  }
+
+  def getFieldsExistsTotalHits(index: String, documentType: String, client: ElasticClient)(fields: Set[String]): Map[String, Long] = {
+
+    def createFieldExistsTotalHits(field: String): QueryDefinition = {
+
+      existsQuery(field)
+    }
+
+    executeQueryOnFields(index, documentType, client)(fields)(createFieldExistsTotalHits)
+  }
+
+  def getFieldsNotExistsTotalHits(index: String, documentType: String, client: ElasticClient)(fields: Set[String]): Map[String, Long] = {
+
+
+    def createFieldNotExistsQuery(field: String): QueryDefinition = {
+
+      bool(must(not(existsQuery(field))))
+    }
+
+    executeQueryOnFields(index, documentType, client)(fields)(createFieldNotExistsQuery)
+  }
+
+  def printFieldStats(fieldCounts: Map[String, (Long, Long)]): Unit = {
+    
+    val fieldNameHeader = "field name"
+    val fieldExistsCountHeader = "field exists in (number of documents)"
+    val fieldNotExistsCountHeader = "field not exists in (number of documents)"
+    val dash = '-'
+    val firstColumnDashed = dash.toString * 31
+    val secondColumnDashed = dash.toString * 39
+    val thirdColumnDashed = dash.toString * 42
+
+    println(f"$fieldNameHeader%-30s | $fieldExistsCountHeader%-37s | $fieldNotExistsCountHeader%-41s")
+    println(f"$firstColumnDashed|$secondColumnDashed|$thirdColumnDashed")
+    println(fieldCounts.map(entry => {
+
+      val fieldName = entry._1
+      val fieldExistsCount = entry._2._1
+      val fieldNotExistsCount = entry._2._2
+
+      f"$fieldName%-30s | $fieldExistsCount%37d | $fieldNotExistsCount%41d"
+    }).mkString("\n"))
+  }
+
+  @main
+  def main(args: String*) = {
+
+    if (args.isEmpty) {
+      println(usage)
+      sys.exit(1)
+    }
+
+    val arglist = args.toList
+
+    val options = nextOption(Map(), arglist)
+
+    val hostOption = options.get('host)
+    val portOption = options.get('port)
+    val indexOption = options.get('index)
+    val typeOption = options.get('type)
+
+    if (hostOption.isEmpty || portOption.isEmpty || indexOption.isEmpty || typeOption.isEmpty) {
+
+      println("Please define -host, -port, -index and -type at least parameter")
+      println(usage)
+      sys.exit(1)
+    }
+
+    val host = hostOption.get
+    val port = portOption.get
+    val index = indexOption.get
+    val documentType = typeOption.get
+
+    println(f"\ntry to retrieve field statistics for index '$index' and document type '$documentType' at host '$host' and port '$port'\n")
+
+    val uri = ElasticsearchClientUri("elasticsearch://" + host + ":" + port)
+    val client = ElasticClient.transport(uri)
+
+    val fields = getFields(index, documentType, client)
+    val fieldsExistsTotalHits = getFieldsExistsTotalHits(index, documentType, client)(fields)
+    val fieldsNotExistsTotalHits = getFieldsNotExistsTotalHits(index, documentType, client)(fields)
+
+    val fieldCounts = fields.map(field => {
+
+      val fieldExistsCount = fieldsExistsTotalHits(field)
+      val fieldNotExistsCount = fieldsNotExistsTotalHits(field)
+
+      field -> (fieldExistsCount, fieldNotExistsCount)
+    }).toMap
+
+    printFieldStats(fieldCounts)
+  }
