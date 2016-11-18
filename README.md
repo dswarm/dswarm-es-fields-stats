@@ -14,3 +14,5 @@ esfstats --
         -type   document type
         -help   print this help
 ```
+
+**note**: ````--```` is required to delegate the parameters to the Scala script (otherwise they will be interpreted as Ammonite parameters)
